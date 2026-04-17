@@ -14,6 +14,8 @@ log = logging.getLogger(__name__)
 
 app = FastAPI()
 client = httpx.AsyncClient(timeout=120.0)
+# Short connect timeout detects offline PC quickly; read timeout stays long for actual inference
+search_client = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=5.0))
 
 
 @app.get("/")
@@ -32,7 +34,19 @@ async def predict(request: Request):
     content_type = request.headers["content-type"]
 
     if b'"facial-recognition"' not in body and b'"ocr"' not in body:
-        log.info("→ local (%s bytes)", len(body))
+        # Search/CLIP: prefer remote (PC) when online, fall back to local only if offline
+        try:
+            log.info("→ remote search (%s bytes)", len(body))
+            resp = await search_client.post(
+                REMOTE_ML_URL + "/predict",
+                content=body,
+                headers={"content-type": content_type},
+            )
+            return Response(resp.content, resp.status_code, media_type=resp.headers.get("content-type"))
+        except (httpx.ConnectError, httpx.TimeoutException):
+            log.info("remote offline, routing search → local")
+
+        log.info("→ local search (%s bytes)", len(body))
         for attempt in range(2):
             try:
                 resp = await client.post(
@@ -40,11 +54,7 @@ async def predict(request: Request):
                     content=body,
                     headers={"content-type": content_type},
                 )
-                return Response(
-                    resp.content,
-                    resp.status_code,
-                    media_type=resp.headers.get("content-type"),
-                )
+                return Response(resp.content, resp.status_code, media_type=resp.headers.get("content-type"))
             except httpx.ConnectError:
                 if attempt == 0:
                     log.warning("local ML not ready, retrying in 3s...")

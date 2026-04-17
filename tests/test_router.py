@@ -41,8 +41,8 @@ async def test_ping(ac):
 
 
 @respx.mock
-async def test_clip_routes_to_local(ac):
-    respx.post(f"{LOCAL}/predict").mock(
+async def test_clip_routes_to_remote_when_online(ac):
+    respx.post(f"{REMOTE}/predict").mock(
         return_value=httpx.Response(200, json={"clip": [[0.1, 0.2]]})
     )
     async with ac:
@@ -50,6 +50,19 @@ async def test_clip_routes_to_local(ac):
     assert resp.status_code == 200
     assert "clip" in resp.json()
     assert respx.calls.call_count == 1
+
+
+@respx.mock
+async def test_clip_falls_back_to_local_when_remote_offline(ac):
+    respx.post(f"{REMOTE}/predict").mock(side_effect=httpx.ConnectError("offline"))
+    respx.post(f"{LOCAL}/predict").mock(
+        return_value=httpx.Response(200, json={"clip": [[0.1, 0.2]]})
+    )
+    async with ac:
+        resp = await ac.post("/predict", content=CLIP_BODY, headers={"content-type": CT})
+    assert resp.status_code == 200
+    assert "clip" in resp.json()
+    assert respx.calls.call_count == 2
 
 
 @respx.mock
@@ -107,6 +120,8 @@ async def test_local_cold_start_retries_and_succeeds(ac):
             raise httpx.ConnectError("not ready yet")
         return httpx.Response(200, json={"clip": [[0.1]]})
 
+    # Remote offline so search falls through to local, which has a cold start
+    respx.post(f"{REMOTE}/predict").mock(side_effect=httpx.ConnectError("offline"))
     respx.post(f"{LOCAL}/predict").mock(side_effect=flaky)
     with patch("asyncio.sleep", return_value=None):
         async with ac:
@@ -117,6 +132,7 @@ async def test_local_cold_start_retries_and_succeeds(ac):
 
 @respx.mock
 async def test_local_offline_after_retry_returns_503(ac):
+    respx.post(f"{REMOTE}/predict").mock(side_effect=httpx.ConnectError("offline"))
     respx.post(f"{LOCAL}/predict").mock(side_effect=httpx.ConnectError("still down"))
     with patch("asyncio.sleep", return_value=None):
         async with ac:

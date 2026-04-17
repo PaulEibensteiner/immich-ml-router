@@ -4,7 +4,7 @@ A lightweight FastAPI proxy that sits between [Immich](https://immich.app) and i
 
 ## Motivation
 
-Immich is configured to use a remote GPU server (4090 PC) for ML tasks. When the PC is offline, **all** ML fails — including CLIP semantic search, which should always be available. This router fixes that.
+When Immich is configured to use a remote GPU server for ML, taking that machine offline breaks **everything** — including CLIP semantic search, which should always be available. This router fixes that by splitting traffic: light search tasks fall back to a local CPU server, while heavy jobs simply queue until the GPU comes back.
 
 ## Routing Logic
 
@@ -14,20 +14,64 @@ Immich Server
     ▼
 immich-ml-router
     ├── CLIP (semantic search)
-    │     → remote PC (4090) when online
-    │     → local CPU server (fallback when PC is offline)
+    │     → remote GPU server when online
+    │     → local CPU server (fallback when GPU is offline)
     │
     └── facial-recognition / OCR
-          → remote PC only
+          → remote GPU server only
           → 503 when offline (Immich queues and retries automatically)
+```
+
+## Quick Start
+
+### 1. Add services to your Immich `docker-compose.yml`
+
+```yaml
+services:
+  immich-ml-local:
+    container_name: immich_ml_local
+    image: ghcr.io/immich-app/immich-machine-learning:release
+    restart: always
+    volumes:
+      - ml-model-cache:/cache
+    environment:
+      - REDIS_HOSTNAME=redis
+      - MACHINE_LEARNING_MODEL_TTL=300   # exit after 5min idle, freeing RAM
+
+  immich-ml-router:
+    container_name: immich_ml_router
+    image: ghcr.io/yanghu/immich-ml-router:latest
+    restart: always
+    environment:
+      - LOCAL_ML_URL=http://immich-ml-local:3003
+      - REMOTE_ML_URL=http://<your-gpu-pc-ip>:3003
+
+volumes:
+  ml-model-cache:
+```
+
+### 2. Update `.env`
+
+```
+IMMICH_MACHINE_LEARNING_URL=http://immich-ml-router:3003
+```
+
+### 3. Start
+
+```bash
+docker compose pull immich-ml-local immich-ml-router
+docker compose up -d immich-ml-local immich-ml-router
+docker compose up -d immich-server  # recreate to pick up new env
 ```
 
 ## Configuration
 
 | Env var | Default | Description |
 |---------|---------|-------------|
-| `LOCAL_ML_URL` | `http://immich-ml-local:3003` | Always-on CPU ML server |
-| `REMOTE_ML_URL` | `http://10.0.10.12:3003` | GPU PC ML server |
+| `LOCAL_ML_URL` | `http://immich-ml-local:3003` | Always-on CPU ML server (fallback) |
+| `REMOTE_ML_URL` | `http://gpu-pc:3003` | GPU ML server (preferred) |
+
+Timeouts: 5s connect (fast offline detection), 120s read (covers cold model load on CPU).
 
 ## Development
 
@@ -42,46 +86,14 @@ make test-integration
 make test
 ```
 
-## Build & Deploy
+## Build
 
 ```bash
-# Build and push image to Gitea registry
-make push
+# Push to ghcr.io (public)
+make push-public
 
-# Pull and restart on debian.lan
-ssh yang@debian.lan "docker compose -f /home/yang/docker/immich/docker-compose.yml pull immich-ml-router \
-  && docker compose -f /home/yang/docker/immich/docker-compose.yml up -d immich-ml-router"
+# Push to both ghcr.io and a private registry (set IMAGE in .env.make)
+make release
 ```
 
-## docker-compose snippet
-
-Add to your Immich `docker-compose.yml`:
-
-```yaml
-services:
-  immich-ml-local:
-    container_name: immich_ml_local
-    image: ghcr.io/immich-app/immich-machine-learning:release
-    restart: always
-    volumes:
-      - ml-model-cache:/cache
-    environment:
-      - REDIS_HOSTNAME=redis
-      - MACHINE_LEARNING_MODEL_TTL=300   # exit after 5min idle, freeing ~2GB RAM
-
-  immich-ml-router:
-    container_name: immich_ml_router
-    image: git.yhu.me/yang/immich-ml-router:latest
-    restart: always
-    environment:
-      - LOCAL_ML_URL=http://immich-ml-local:3003
-      - REMOTE_ML_URL=http://<gpu-pc-ip>:3003
-
-volumes:
-  ml-model-cache:
-```
-
-And in `.env`:
-```
-IMMICH_MACHINE_LEARNING_URL=http://immich-ml-router:3003
-```
+Copy `.env.make.example` → `.env.make` and set `IMAGE` to your private registry if needed.

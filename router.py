@@ -7,7 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse, Response
 
 LOCAL_ML_URL = os.environ.get("LOCAL_ML_URL", "http://immich-ml-local:3003")
-REMOTE_ML_URL = os.environ.get("REMOTE_ML_URL", "http://10.0.10.12:3003")
+REMOTE_ML_URL = os.environ.get("REMOTE_ML_URL", "http://gpu-pc:3003")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger(__name__)

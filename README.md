@@ -1,10 +1,26 @@
 # immich-ml-router
 
-A lightweight FastAPI proxy that sits between [Immich](https://immich.app) and its ML backends, routing requests based on task type.
+A lightweight FastAPI proxy that sits between [Immich](https://immich.app) and
+its ML backends, routing requests based on task type.
 
 ## Motivation
 
-When Immich is configured to use a remote GPU server for ML, taking that machine offline breaks **everything** — including CLIP semantic search, which should always be available. This router fixes that by splitting traffic: light search tasks fall back to a local CPU server, while heavy jobs simply queue until the GPU comes back.
+My Immich runs on a mini-PC which isn't suitable for ML tasks (CLIP indexing,
+facial-recognition, OCR, etc), so I configure it to use a remote serer for ML.
+
+When Immich is configured to use a remote GPU server (e.g. powerful PC with
+RTX4090) for ML, taking that machine offline breaks **everything** — including
+CLIP semantic search.
+
+The official Immich guide suggests having both local and remote ML servers
+configured, so requests can fallback to local server. However, that is not
+ideal, since the local server is limited to weaker/smaller models, I do not want
+heavy tasks like facial-recognition, OCR to fallback to the local server. I'd
+rather Immich to queue those tasks and wait for the powerful remote server for
+those tasks.
+
+This router fixes that by splitting traffic: light search tasks fall back to a
+local CPU server, while heavy jobs simply queue until the GPU comes back.
 
 ## Routing Logic
 
@@ -36,7 +52,7 @@ services:
       - ml-model-cache:/cache
     environment:
       - REDIS_HOSTNAME=redis
-      - MACHINE_LEARNING_MODEL_TTL=300   # exit after 5min idle, freeing RAM
+      - MACHINE_LEARNING_MODEL_TTL=300 # exit after 5min idle, freeing RAM
 
   immich-ml-router:
     container_name: immich_ml_router
@@ -66,12 +82,13 @@ docker compose up -d immich-server  # recreate to pick up new env
 
 ## Configuration
 
-| Env var | Default | Description |
-|---------|---------|-------------|
-| `LOCAL_ML_URL` | `http://immich-ml-local:3003` | Always-on CPU ML server (fallback) |
-| `REMOTE_ML_URL` | `http://gpu-pc:3003` | GPU ML server (preferred) |
+| Env var         | Default                       | Description                        |
+| --------------- | ----------------------------- | ---------------------------------- |
+| `LOCAL_ML_URL`  | `http://immich-ml-local:3003` | Always-on CPU ML server (fallback) |
+| `REMOTE_ML_URL` | `http://gpu-pc:3003`          | GPU ML server (preferred)          |
 
-Timeouts: 5s connect (fast offline detection), 120s read (covers cold model load on CPU).
+Timeouts: 5s connect (fast offline detection), 120s read (covers cold model load
+on CPU).
 
 ## Development
 
@@ -96,4 +113,5 @@ make push-public
 make release
 ```
 
-Copy `.env.make.example` → `.env.make` and set `IMAGE` to your private registry if needed.
+Copy `.env.make.example` → `.env.make` and set `IMAGE` to your private registry
+if needed.

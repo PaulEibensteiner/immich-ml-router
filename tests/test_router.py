@@ -178,14 +178,41 @@ async def test_clip_and_face_routes_to_remote(ac):
 
 
 @respx.mock
-async def test_remote_offline_returns_503(ac):
+async def test_remote_offline_returns_503(ac, monkeypatch):
+    monkeypatch.setattr(router_module, "REMOTE_BOOT_WAIT_SECONDS", 0.0)
+    monkeypatch.setattr(router_module, "REMOTE_POLL_INTERVAL_SECONDS", 0.0)
     respx.post(f"{REMOTE}/predict").mock(side_effect=httpx.ConnectError("offline"))
-    async with ac:
-        resp = await ac.post(
-            "/predict", content=FACE_BODY, headers={"content-type": CT}
-        )
+    with patch("asyncio.sleep", return_value=None):
+        async with ac:
+            resp = await ac.post(
+                "/predict", content=FACE_BODY, headers={"content-type": CT}
+            )
     assert resp.status_code == 503
     assert resp.json()["error"] == "remote ML offline"
+
+
+@respx.mock
+async def test_heavy_blocks_until_remote_boots(ac, monkeypatch):
+    monkeypatch.setattr(router_module, "REMOTE_BOOT_WAIT_SECONDS", 30.0)
+    monkeypatch.setattr(router_module, "REMOTE_POLL_INTERVAL_SECONDS", 0.0)
+
+    call_count = 0
+
+    def boot_after_n(request):
+        nonlocal call_count
+        call_count += 1
+        if call_count < 3:
+            raise httpx.ConnectError("still booting")
+        return httpx.Response(200, json={"facial-recognition": []})
+
+    respx.post(f"{REMOTE}/predict").mock(side_effect=boot_after_n)
+    with patch("asyncio.sleep", return_value=None):
+        async with ac:
+            resp = await ac.post(
+                "/predict", content=FACE_BODY, headers={"content-type": CT}
+            )
+    assert resp.status_code == 200
+    assert call_count == 3
 
 
 @respx.mock

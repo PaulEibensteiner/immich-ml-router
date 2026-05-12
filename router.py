@@ -20,6 +20,13 @@ WOL_ENABLED = os.environ.get("WOL_ENABLED", "false").lower() in {
     "on",
 }
 WOL_MIN_INTERVAL_SECONDS = float(os.environ.get("WOL_MIN_INTERVAL_SECONDS", "1.0"))
+# After WoL, block heavy (face/OCR) requests for up to this long while polling the remote.
+# Immich's microservices have generous ML timeouts, so blocking ~60-120s avoids the job
+# failing and being put on a long retry backoff.
+REMOTE_BOOT_WAIT_SECONDS = float(os.environ.get("REMOTE_BOOT_WAIT_SECONDS", "90"))
+REMOTE_POLL_INTERVAL_SECONDS = float(
+    os.environ.get("REMOTE_POLL_INTERVAL_SECONDS", "3")
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger(__name__)
@@ -74,6 +81,44 @@ async def maybe_send_wol() -> None:
         log.info("sent WOL packet to %s via %s:%s", REMOTE_MAC, WOL_BROADCAST, WOL_PORT)
 
 
+async def post_remote_with_wait(
+    body: bytes, content_type: str, max_wait_seconds: float
+) -> Response | None:
+    """POST to the remote, blocking up to `max_wait_seconds` while it boots.
+
+    Returns a Response on success, or None if the remote never came back in time.
+    """
+    deadline = time.monotonic() + max_wait_seconds
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            resp = await client.post(
+                REMOTE_ML_URL + "/predict",
+                content=body,
+                headers={"content-type": content_type},
+            )
+            if attempt > 1:
+                log.info("remote came back after %d attempts", attempt)
+            return Response(
+                resp.content,
+                resp.status_code,
+                media_type=resp.headers.get("content-type"),
+            )
+        except (httpx.ConnectError, httpx.TimeoutException):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                log.warning("remote did not come back within %.0fs", max_wait_seconds)
+                return None
+            sleep_for = min(REMOTE_POLL_INTERVAL_SECONDS, remaining)
+            if attempt == 1:
+                log.info(
+                    "remote offline, blocking up to %.0fs while it boots",
+                    max_wait_seconds,
+                )
+            await asyncio.sleep(sleep_for)
+
+
 @app.get("/")
 async def root():
     return {"message": "Immich ML"}
@@ -99,7 +144,11 @@ async def predict(request: Request):
                 content=body,
                 headers={"content-type": content_type},
             )
-            return Response(resp.content, resp.status_code, media_type=resp.headers.get("content-type"))
+            return Response(
+                resp.content,
+                resp.status_code,
+                media_type=resp.headers.get("content-type"),
+            )
         except (httpx.ConnectError, httpx.TimeoutException):
             log.info("remote offline, routing search -> local")
 
@@ -111,7 +160,11 @@ async def predict(request: Request):
                     content=body,
                     headers={"content-type": content_type},
                 )
-                return Response(resp.content, resp.status_code, media_type=resp.headers.get("content-type"))
+                return Response(
+                    resp.content,
+                    resp.status_code,
+                    media_type=resp.headers.get("content-type"),
+                )
             except httpx.ConnectError:
                 if attempt == 0:
                     log.warning("local ML not ready, retrying in 3s...")
@@ -126,21 +179,12 @@ async def predict(request: Request):
     else:
         await maybe_send_wol()
         log.info("-> remote (%s bytes)", len(body))
-        try:
-            resp = await client.post(
-                REMOTE_ML_URL + "/predict",
-                content=body,
-                headers={"content-type": content_type},
-            )
-            return Response(
-                resp.content,
-                resp.status_code,
-                media_type=resp.headers.get("content-type"),
-            )
-        except (httpx.ConnectError, httpx.TimeoutException):
-            log.warning("remote ML offline, returning 503")
-            return Response(
-                status_code=503,
-                content=b'{"error":"remote ML offline"}',
-                media_type="application/json",
-            )
+        resp = await post_remote_with_wait(body, content_type, REMOTE_BOOT_WAIT_SECONDS)
+        if resp is not None:
+            return resp
+        log.warning("remote ML offline, returning 503")
+        return Response(
+            status_code=503,
+            content=b'{"error":"remote ML offline"}',
+            media_type="application/json",
+        )

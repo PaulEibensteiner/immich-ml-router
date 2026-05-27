@@ -32,7 +32,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 log = logging.getLogger(__name__)
 
 app = FastAPI()
-client = httpx.AsyncClient(timeout=120.0)
+client = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=5.0))
 # Short connect timeout detects offline PC quickly; read timeout stays long for actual inference
 search_client = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=5.0))
 
@@ -93,6 +93,8 @@ async def post_remote_with_wait(
     while True:
         attempt += 1
         try:
+            # apparently, this will wait for 5 seconds, as defined above in the client connect argument parameter
+            # so the full time of every loop iteration is actually 5 + REMOTE_POLL_INTERVAL_SECONDS
             resp = await client.post(
                 REMOTE_ML_URL + "/predict",
                 content=body,

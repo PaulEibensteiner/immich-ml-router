@@ -167,15 +167,15 @@ async def predict(request: Request):
                     resp.status_code,
                     media_type=resp.headers.get("content-type"),
                 )
-            except httpx.ConnectError:
+            except (httpx.ConnectError, httpx.TimeoutException):
                 if attempt == 0:
-                    log.warning("local ML not ready, retrying in 3s...")
+                    log.warning("local ML not ready or timed out, retrying in 3s...")
                     await asyncio.sleep(3)
                     continue
-                log.error("local ML offline after retry")
+                log.error("local ML offline or timed out after retry")
                 return Response(
                     status_code=503,
-                    content=b'{"error":"local ML offline"}',
+                    content=b'{"error":"local ML offline or timed out"}',
                     media_type="application/json",
                 )
     else:
